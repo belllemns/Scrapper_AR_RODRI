@@ -43,10 +43,17 @@ def main() -> int:
 
         def record_response(response) -> None:
             if any(target in response.url for target in TARGETS):
+                body = None
+                if "/v2/checkout/ancillaries" in response.url:
+                    try:
+                        body = response.json()
+                    except Exception:
+                        body = None
                 traffic.append({
                     "kind": "response",
                     "status": response.status,
                     "url": response.url,
+                    "body": body,
                 })
 
         page.on("request", record_request)
