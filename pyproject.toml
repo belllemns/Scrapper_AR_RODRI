@@ -11,7 +11,7 @@ dependencies = ["selenium==4.44.0", "pyarrow>=15.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-playwright = ["playwright==1.58.2"]
+playwright = ["playwright==1.60.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

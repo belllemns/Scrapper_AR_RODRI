@@ -22,6 +22,21 @@ folder will contain a HAR, a trace ZIP, and filtered network requests for
 offers, passengers, and ancillaries. These files contain session data and are
 ignored by Git.
 
+## Automatic ancillary run
+
+Run one visible-browser search through passenger registration and ancillary
+price retrieval:
+
+```powershell
+$env:PYTHONPATH = "src"
+python scripts/run_playwright_ancillaries.py --origin BRC --destination BUE --date 2026-09-30
+```
+
+The script uses the configured fake passenger, stops on the ancillary page,
+and writes a JSON result to `Downloads`. It never enters payment details or
+confirms a purchase. A missing ancillary response is reported as an error,
+not as unavailable baggage.
+
 For generated interaction code only:
 
 ```powershell
