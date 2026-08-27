@@ -11,6 +11,8 @@ aerolineas-profile*/
 # Generated scraper outputs
 *.parquet
 *.har
+*.zip
+flow_generated.py
 *.log
 .env
 .env.*
