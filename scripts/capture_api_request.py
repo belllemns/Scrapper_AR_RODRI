@@ -24,6 +24,7 @@ def main() -> int:
     parser.add_argument("--destination")
     parser.add_argument("--date")
     parser.add_argument("--flex", action="store_true")
+    parser.add_argument("--with-ancillaries", action="store_true")
     parser.add_argument("--wait-seconds", type=int, default=8)
     parser.add_argument("--profile-dir", default="aerolineas-profile-api-capture")
     parser.add_argument(
@@ -50,9 +51,53 @@ def main() -> int:
 
     driver = webdriver.Chrome(options=options)
     try:
+        def is_target(url: str) -> bool:
+            return any(path in url for path in (
+                "/v1/flights/offers",
+                "/v2/checkout/passengers",
+                "/v2/checkout/ancillaries",
+            ))
+
         driver.execute_cdp_cmd("Network.enable", {})
         driver.get(args.url)
         time.sleep(args.wait_seconds)
+        if args.with_ancillaries:
+            for _ in range(20):
+                if driver.execute_script("""
+                    [...document.querySelectorAll('button')]
+                      .find(x => x.innerText.includes('Aceptar solo las esenciales'))?.click();
+                    const card = [...document.querySelectorAll('button')]
+                      .find(x => x.className.includes('FareContainer'));
+                    if (card) { card.click(); return true; }
+                    return false;
+                """):
+                    break
+                time.sleep(1)
+            for _ in range(20):
+                if driver.execute_script("""
+                    return Boolean(document.querySelector(
+                      'input[name*=firstName i], input[id*=firstName i]'));
+                """):
+                    break
+                time.sleep(1)
+            driver.execute_script("""
+                const setValue = (selectors, value) => {
+                  const el = selectors.map(s => document.querySelector(s)).find(Boolean);
+                  if (!el) return;
+                  const setter = Object.getOwnPropertyDescriptor(el.__proto__, 'value')?.set;
+                  if (setter) setter.call(el, value); else el.value = value;
+                  el.dispatchEvent(new Event('input', {bubbles:true}));
+                  el.dispatchEvent(new Event('change', {bubbles:true}));
+                };
+                setValue(['input[name*=firstName i]', 'input[id*=firstName i]'], 'Test');
+                setValue(['input[name*=lastName i]', 'input[id*=lastName i]'], 'Pricing');
+                setValue(['input[name*=birthDate i]', 'input[id*=birthDate i]'], '03/05/2002');
+                setValue(['input[name*=documentNumber i]', 'input[id*=documentNumber i]'], '777777777');
+                setValue(['input[type=email]', 'input[name*=email i]'], 'pricing.test@example.com');
+                [...document.querySelectorAll('button')]
+                  .find(x => /^(Continuar|Siguiente)$/i.test(x.innerText.trim()))?.click();
+            """)
+            time.sleep(args.wait_seconds)
         requests = []
         responses = []
         for entry in driver.get_log("performance"):
@@ -63,7 +108,7 @@ def main() -> int:
             params = message.get("params", {})
             if message.get("method") == "Network.requestWillBeSent":
                 request = params.get("request", {})
-                if "/v1/flights/offers" in request.get("url", ""):
+                if is_target(request.get("url", "")):
                     requests.append({
                         "requestId": params.get("requestId"),
                         "method": request.get("method"),
@@ -73,7 +118,7 @@ def main() -> int:
                     })
             elif message.get("method") == "Network.responseReceived":
                 response = params.get("response", {})
-                if "/v1/flights/offers" in response.get("url", ""):
+                if is_target(response.get("url", "")):
                     responses.append({
                         "requestId": params.get("requestId"),
                         "status": response.get("status"),
