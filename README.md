@@ -45,7 +45,9 @@ python scripts/run_playwright_batch.py --date 2026-09-30
 ```
 
 The batch pauses between routes, keeps one diagnostic JSON per route, and
-continues when an individual route is blocked or fails validation.
+continues when an individual route is blocked or fails validation. It searches
+the next six calendar months by default, orders E/N dates by calendar fare,
+prefers E over N on the exact date, and retries with a fresh browser context.
 
 For generated interaction code only:
 

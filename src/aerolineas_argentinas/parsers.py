@@ -93,6 +93,49 @@ def select_offer_group(payload: dict[str, Any]) -> tuple[dict[str, Any], int, in
     return None
 
 
+def selected_offer_details(payload: dict[str, Any], offer_id: str) -> dict[str, Any]:
+    """Resolve the selected offer ID to its fare class, flight, and brand totals."""
+    branded = payload.get("brandedOffers", {}).get("0", [])
+    for group in branded:
+        offers = group.get("offers", [])
+        selected = next(
+            (offer for offer in offers if str(offer.get("offerId")) == str(offer_id)),
+            None,
+        )
+        if selected is None:
+            continue
+        booking_class = selected.get("bookingClass")
+        same_class = [
+            offer for offer in offers
+            if offer.get("bookingClass") == booking_class
+        ]
+        totals = {
+            (offer.get("brand", {}).get("id") or offer.get("brandId")):
+            _money(offer.get("fare", {}).get("total"))
+            for offer in same_class
+        }
+        leg = (group.get("legs") or [{}])[0]
+        segment = (leg.get("segments") or [{}])[0]
+        brand = selected.get("brand", {})
+        return {
+            "selected_offer_id": str(offer_id),
+            "booking_class": booking_class,
+            "fare_basis": selected.get("fareBasis"),
+            "brand_id": brand.get("id") or selected.get("brandId"),
+            "brand_name": brand.get("name"),
+            "flight_number": segment.get("flightNumber"),
+            "departure_datetime": segment.get("departure"),
+            "arrival_datetime": segment.get("arrival"),
+            "stops": leg.get("stops"),
+            "duration_minutes": leg.get("totalDuration"),
+            "currency": payload.get("searchMetadata", {}).get("currency", "ARS"),
+            "base_total": totals.get("EB"),
+            "plus_total": totals.get("EP"),
+            "flex_total": totals.get("EF"),
+        }
+    return {}
+
+
 def parse_checkout_detail(payload: dict[str, Any]) -> dict[str, Any]:
     """Extract the displayed net ticket price from the selected-offer detail."""
     breakdown = payload.get("productBreakdown", {}).get("airBreakdown", {})

@@ -1,4 +1,4 @@
-from aerolineas_argentinas.parsers import parse_ancillaries, select_offer
+from aerolineas_argentinas.parsers import parse_ancillaries, select_offer, selected_offer_details
 
 
 def payload(classes):
@@ -34,3 +34,28 @@ def test_parse_ancillaries_maps_baggage_groups():
         "checked_baggage_additional_price": 60500.0,
         "hand_baggage_price": 54450.0,
     }
+
+
+def test_resolves_selected_offer_class_and_brand_totals():
+    data = {
+        "searchMetadata": {"currency": "ARS"},
+        "brandedOffers": {"0": [{
+            "legs": [{"stops": 0, "totalDuration": 125, "segments": [{
+                "flightNumber": 1663,
+                "departure": "2026-09-30T07:50:00",
+                "arrival": "2026-09-30T09:55:00",
+            }]}],
+            "offers": [
+                {"offerId": "1", "bookingClass": "A", "fareBasis": "AYEB", "brand": {"id": "EB", "name": "Base"}, "fare": {"total": 100}},
+                {"offerId": "2", "bookingClass": "A", "fareBasis": "AYEP", "brand": {"id": "EP", "name": "Plus"}, "fare": {"total": 120}},
+                {"offerId": "3", "bookingClass": "A", "fareBasis": "AYEF", "brand": {"id": "EF", "name": "Flex"}, "fare": {"total": 140}},
+            ],
+        }]},
+    }
+    result = selected_offer_details(data, "1")
+    assert result["booking_class"] == "A"
+    assert result["fare_basis"] == "AYEB"
+    assert result["flight_number"] == 1663
+    assert result["base_total"] == 100.0
+    assert result["plus_total"] == 120.0
+    assert result["flex_total"] == 140.0

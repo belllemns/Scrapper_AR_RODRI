@@ -10,19 +10,29 @@ import time
 
 from playwright.sync_api import Page, sync_playwright
 
-from aerolineas_argentinas.parsers import parse_ancillaries
+from aerolineas_argentinas.parsers import (
+    parse_ancillaries,
+    select_offer_group,
+    selected_offer_details,
+)
 from aerolineas_argentinas.routes import offers_url
 
 
-def select_react_option(page: Page, index: int, value: str) -> None:
-    controls = page.locator("input[id^='react-select-']")
-    control = controls.last if index == -1 else controls.nth(index)
+def select_react_control(page: Page, control, value: str) -> None:
     control.click(force=True)
     control.fill(value)
     page.wait_for_timeout(200)
     page.locator("[role='option']").filter(
         has_text=re.compile(rf"^{re.escape(value)}(?:\s|$)", re.IGNORECASE)
     ).first.click()
+
+
+def select_react_option(page: Page, index: int, value: str) -> None:
+    select_react_control(
+        page,
+        page.locator("input[id^='react-select-']").nth(index),
+        value,
+    )
 
 
 def main() -> int:
@@ -42,13 +52,34 @@ def main() -> int:
         "passengers_status": None,
         "ancillaries_status": None,
         "ancillaries": None,
+        "selected_offer_id": None,
+        "booking_class": None,
+        "fare_basis": None,
+        "brand_id": None,
+        "brand_name": None,
+        "flight_number": None,
+        "departure_datetime": None,
+        "arrival_datetime": None,
+        "stops": None,
+        "duration_minutes": None,
+        "currency": None,
+        "base_total": None,
+        "plus_total": None,
+        "flex_total": None,
         "error": None,
         "final_url": None,
+        "page_title": None,
+        "page_text_excerpt": None,
+        "checkout_refreshed": False,
+        "network_errors": [],
+        "page_errors": [],
         "validation_messages": [],
         "selected_values": {},
         "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),
     }
     ancillary_payload = None
+    offers_payload = None
+    selected_offer_id = None
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=False)
@@ -57,7 +88,21 @@ def main() -> int:
         page.set_default_timeout(args.timeout_seconds * 1000)
 
         def capture_response(response) -> None:
-            nonlocal ancillary_payload
+            nonlocal ancillary_payload, offers_payload
+            if "api.aerolineas.com.ar" in response.url and response.status >= 400:
+                result["network_errors"].append({
+                    "method": response.request.method,
+                    "status": response.status,
+                    "url": response.url,
+                })
+            if ("/v1/flights/offers" in response.url
+                    and response.request.method == "GET" and response.ok):
+                try:
+                    payload = response.json()
+                    if payload.get("brandedOffers"):
+                        offers_payload = payload
+                except Exception:
+                    pass
             if "/v2/checkout/passengers" in response.url and response.request.method == "POST":
                 result["passengers_status"] = response.status
             if "/v2/checkout/ancillaries" in response.url:
@@ -68,7 +113,20 @@ def main() -> int:
                     except Exception:
                         pass
 
+        def capture_request(request) -> None:
+            nonlocal selected_offer_id
+            if "/v1/flights/offers" not in request.url or request.method != "POST":
+                return
+            try:
+                selected = json.loads(request.post_data or "{}").get("selectedFlights", [])
+                if selected:
+                    selected_offer_id = str(selected[0])
+            except (TypeError, ValueError):
+                pass
+
+        page.on("request", capture_request)
         page.on("response", capture_response)
+        page.on("pageerror", lambda error: result["page_errors"].append(str(error)))
         try:
             page.goto(
                 offers_url(args.origin, args.destination, args.date, flex=False),
@@ -77,22 +135,61 @@ def main() -> int:
             if page.title() == "403 Forbidden":
                 result.update(status="security_blocked", error="initial_request_403")
             else:
+                offers_deadline = time.monotonic() + args.timeout_seconds
+                while offers_payload is None and time.monotonic() < offers_deadline:
+                    page.wait_for_timeout(500)
+                if offers_payload is None:
+                    result["error"] = "offers_response_not_received"
+                    raise RuntimeError("offers response not received")
+                group_info = select_offer_group(offers_payload)
+                if group_info is None:
+                    result["error"] = "no_e_n_offer_for_exact_date"
+                    raise RuntimeError("no E/N offer for exact date")
+                _, group_index, offer_index = group_info
+
                 cookie_button = page.get_by_role("button", name="Aceptar solo las esenciales")
                 if cookie_button.count():
                     cookie_button.last.click(force=True)
                     page.wait_for_timeout(500)
 
-                page.locator("button[class*='FareContainer']").first.click()
+                fare_index = group_index * 5 + offer_index
+                fare_cards = page.locator("button[class*='FareContainer']")
+                render_deadline = time.monotonic() + args.timeout_seconds
+                while fare_cards.count() <= fare_index and time.monotonic() < render_deadline:
+                    show_more = page.get_by_role(
+                        "button", name=re.compile(r"Mostrar más vuelos", re.IGNORECASE)
+                    )
+                    if not show_more.count():
+                        break
+                    show_more.last.click()
+                    page.wait_for_timeout(1000)
+                if fare_cards.count() <= fare_index:
+                    result["error"] = (
+                        f"e_n_fare_card_not_rendered:index={fare_index}:"
+                        f"cards={fare_cards.count()}"
+                    )
+                    raise RuntimeError("E/N fare card was not rendered")
+                fare_cards.nth(fare_index).click()
                 page.wait_for_timeout(2000)
                 page.get_by_role("button", name="Comprar", exact=True).click()
                 page.get_by_role("button", name="Aceptar", exact=True).last.click()
                 page.wait_for_url(re.compile(r"/checkout/passengers"))
-                page.wait_for_timeout(2000)
-                if "/checkout-error" in page.url:
-                    result.update(status="security_blocked", error="checkout_security_validation_failed")
-                    raise RuntimeError("checkout security validation failed")
+                first_name = page.locator("input[name='passengers.0.passenger_firstName']")
+                try:
+                    first_name.wait_for(state="visible", timeout=30_000)
+                except Exception:
+                    if "/checkout-error" in page.url:
+                        result.update(status="security_blocked", error="checkout_security_validation_failed")
+                        raise RuntimeError("checkout security validation failed")
+                    result["checkout_refreshed"] = True
+                    page.reload(wait_until="domcontentloaded")
+                    try:
+                        first_name.wait_for(state="visible", timeout=15_000)
+                    except Exception:
+                        result["error"] = "checkout_form_not_loaded_after_refresh"
+                        raise RuntimeError("checkout form not loaded after refresh")
 
-                page.locator("input[name='passengers.0.passenger_firstName']").fill("LOL")
+                first_name.fill("LOL")
                 page.locator("input[name='passengers.0.passenger_lastName']").fill("LOL")
                 select_react_option(page, 0, "1")
                 select_react_option(page, 1, "Febrero")
@@ -110,8 +207,12 @@ def main() -> int:
                 page.locator("input[name='contactInformation_email']").fill("l@l.com")
                 page.locator("input[name='contactInformation_confirmationEmail']").fill("l@l.com")
                 page.locator("input[name='phone_type']").first.check(force=True)
-                select_react_option(page, -1, "Afganistán")
-                page.locator("input[name='contactInformation_areaCode']").fill("32")
+                area_code = page.locator("input[name='contactInformation_areaCode']")
+                phone_country = area_code.locator(
+                    "xpath=preceding::input[starts-with(@id, 'react-select-')][1]"
+                )
+                select_react_control(page, phone_country, "Afganistán")
+                area_code.fill("32")
                 page.locator("input[name='contactInformation_phoneNumber']").fill("99999999")
                 page.locator("input[type='checkbox']").nth(2).check()
 
@@ -139,11 +240,19 @@ def main() -> int:
                 elif result["status"] == "error" and result["error"] is None:
                     result["error"] = "ancillaries_response_not_received"
         except Exception as exc:
-            result["error"] = f"{type(exc).__name__}: {exc}"
+            if result["error"] is None:
+                result["error"] = f"{type(exc).__name__}: {exc}"
             if "/checkout-error" in page.url:
                 result["status"] = "security_blocked"
         finally:
+            if offers_payload is not None and selected_offer_id is not None:
+                result.update(selected_offer_details(offers_payload, selected_offer_id))
             result["final_url"] = page.url
+            result["page_title"] = page.title()
+            try:
+                result["page_text_excerpt"] = page.locator("body").inner_text()[-1000:]
+            except Exception:
+                pass
             context.close()
             browser.close()
 
