@@ -37,6 +37,16 @@ and writes a JSON result to `Downloads`. It never enters payment details or
 confirms a purchase. A missing ancillary response is reported as an error,
 not as unavailable baggage.
 
+Run all configured routes sequentially and create a consolidated Parquet:
+
+```powershell
+$env:PYTHONPATH = "src"
+python scripts/run_playwright_batch.py --date 2026-09-30
+```
+
+The batch pauses between routes, keeps one diagnostic JSON per route, and
+continues when an individual route is blocked or fails validation.
+
 For generated interaction code only:
 
 ```powershell
