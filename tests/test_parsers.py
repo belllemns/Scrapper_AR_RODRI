@@ -1,4 +1,10 @@
-from aerolineas_argentinas.parsers import parse_ancillaries, select_offer
+from aerolineas_argentinas.parsers import parse_ancillaries, parse_offers, select_offer
+
+
+def test_parse_offers_supports_direct_api_shape():
+    row = parse_offers(payload(["E"]), "E")[0]
+    assert row["booking_class"] == "E"
+    assert row["price_total"] == 150.0
 
 
 def payload(classes):
