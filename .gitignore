@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Local Chrome profiles and browser diagnostics
+aerolineas-profile*/
+
+# Generated scraper outputs
+*.parquet
+*.har
+*.log
+.env
+.env.*
+!.env.example
