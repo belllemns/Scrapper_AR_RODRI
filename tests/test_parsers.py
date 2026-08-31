@@ -1,4 +1,9 @@
-from aerolineas_argentinas.parsers import parse_ancillaries, select_offer, selected_offer_details
+from aerolineas_argentinas.parsers import (
+    parse_ancillaries,
+    select_offer,
+    select_offer_group,
+    selected_offer_details,
+)
 
 
 def payload(classes):
@@ -20,6 +25,30 @@ def test_falls_back_to_n():
 
 def test_does_not_substitute_other_class():
     assert select_offer(payload(["A"])) is None
+
+
+def test_selects_only_base_with_e_or_n():
+    data = {"searchMetadata": {"currency": "ARS"}, "brandedOffers": {"0": [{
+        "offers": [
+            {"offerId": "flex", "brandId": "EF", "bookingClass": "E", "cabinClass": "Economy", "fare": {"total": 140}},
+            {"offerId": "base", "brandId": "EB", "bookingClass": "N", "cabinClass": "Economy", "fare": {"total": 100}},
+        ],
+    }]}}
+
+    assert select_offer(data)["offer_id"] == "base"
+    group, group_index, offer_index = select_offer_group(data)
+    assert group["offers"][offer_index]["offerId"] == "base"
+    assert group_index == 0
+
+
+def test_rejects_e_or_n_outside_base():
+    data = {"brandedOffers": {"0": [{"offers": [
+        {"offerId": "flex", "brandId": "EF", "bookingClass": "E", "cabinClass": "Economy"},
+        {"offerId": "base", "brandId": "EB", "bookingClass": "A", "cabinClass": "Economy"},
+    ]}]}}
+
+    assert select_offer(data) is None
+    assert select_offer_group(data) is None
 
 
 def test_parse_ancillaries_maps_baggage_groups():

@@ -50,11 +50,12 @@ def parse_offers(payload: dict[str, Any], requested_class: str) -> list[dict[str
 
 
 def select_offer(payload: dict[str, Any]) -> dict[str, Any] | None:
-    """Select E first and N second; never substitute another class."""
+    """Select Base E first and Base N second; never substitute another brand."""
     for booking_class in ("E", "N"):
         matches = parse_offers(payload, booking_class)
-        if matches:
-            return matches[0]
+        base = next((row for row in matches if row.get("brand_id") == "EB"), None)
+        if base:
+            return base
     return None
 
 
@@ -80,12 +81,14 @@ def calendar_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def select_offer_group(payload: dict[str, Any]) -> tuple[dict[str, Any], int, int] | None:
-    """Return the first group with E, otherwise the first group with N."""
+    """Return the first Base E group, otherwise the first Base N group."""
     branded = payload.get("brandedOffers", {}).get("0", [])
     for requested_class in ("E", "N"):
         for group_index, group in enumerate(branded):
             for offer_index, offer in enumerate(group.get("offers", [])):
-                if (str(offer.get("bookingClass", "")).upper() == requested_class
+                brand_id = offer.get("brandId") or offer.get("brand", {}).get("id")
+                if (brand_id == "EB"
+                        and str(offer.get("bookingClass", "")).upper() == requested_class
                         and str(offer.get("cabinClass", "")).lower() == "economy"):
                     group_row = dict(group)
                     group_row["offers"] = list(group.get("offers", []))

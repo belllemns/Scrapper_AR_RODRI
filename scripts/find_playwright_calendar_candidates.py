@@ -31,6 +31,11 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--timeout-seconds", type=int, default=45)
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--user-data-dir",
+        default=str(Path.home() / "AppData" / "Local" / "aerolineas-playwright-profile"),
+    )
+    parser.add_argument("--cdp-url")
     args = parser.parse_args()
 
     started = time.perf_counter()
@@ -39,9 +44,20 @@ def main() -> int:
     error = None
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=False)
-        context = browser.new_context(locale="es-AR", viewport={"width": 1440, "height": 900})
-        page = context.new_page()
+        owns_context = args.cdp_url is None
+        if args.cdp_url:
+            browser = playwright.chromium.connect_over_cdp(args.cdp_url)
+            context = browser.contexts[0]
+            page = context.new_page()
+        else:
+            context = playwright.chromium.launch_persistent_context(
+                args.user_data_dir,
+                channel="chrome",
+                headless=False,
+                locale="es-AR",
+                viewport={"width": 1440, "height": 900},
+            )
+            page = context.pages[0] if context.pages else context.new_page()
         page.set_default_timeout(args.timeout_seconds * 1000)
 
         def capture_response(response) -> None:
@@ -73,8 +89,9 @@ def main() -> int:
         except Exception as exc:
             status, error = "error", f"{type(exc).__name__}: {exc}"
         finally:
-            context.close()
-            browser.close()
+            page.close()
+            if owns_context:
+                context.close()
 
     by_date = {}
     for payload in payloads:

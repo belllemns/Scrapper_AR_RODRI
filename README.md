@@ -47,7 +47,14 @@ python scripts/run_playwright_batch.py --date 2026-09-30
 The batch pauses between routes, keeps one diagnostic JSON per route, and
 continues when an individual route is blocked or fails validation. It searches
 the next six calendar months by default, orders E/N dates by calendar fare,
-prefers E over N on the exact date, and retries with a fresh browser context.
+prefers E over N on the exact date, and retries in fresh tabs. It checkpoints
+the Parquet and summary after every route and continues after security blocks
+unless `--stop-on-security-block` is set. Pass `--resume` to skip routes already
+completed successfully.
+
+By default the batch launches one warm Google Chrome instance and reuses it for
+calendar and checkout requests, preserving the browser validation state while
+opening a fresh tab per operation. Pass `--cold-browser` only for diagnostics.
 
 For generated interaction code only:
 
