@@ -51,6 +51,36 @@ def test_rejects_e_or_n_outside_base():
     assert select_offer_group(data) is None
 
 
+def test_matches_calendar_class_and_flight_instead_of_any_e_offer():
+    data = {"brandedOffers": {"0": [
+        {
+            "legs": [{"segments": [{"flightNumber": 1522}]}],
+            "offers": [{
+                "offerId": "expensive-e",
+                "brandId": "EB",
+                "bookingClass": "E",
+                "cabinClass": "Economy",
+            }],
+        },
+        {
+            "legs": [{"segments": [{"flightNumber": 1836}]}],
+            "offers": [{
+                "offerId": "calendar-n",
+                "brandId": "EB",
+                "bookingClass": "N",
+                "cabinClass": "Economy",
+            }],
+        },
+    ]}}
+
+    group, group_index, offer_index = select_offer_group(
+        data, requested_class="N", flight_number=1836
+    )
+
+    assert group["offers"][offer_index]["offerId"] == "calendar-n"
+    assert group_index == 1
+
+
 def test_parse_ancillaries_maps_baggage_groups():
     data = {"ancillaryGroups": [
         {"groupCode": "SP", "ancillaryPassengers": [{"ancillaryLegs": [{"ancillaries": [{"price": 77440}]}]}]},

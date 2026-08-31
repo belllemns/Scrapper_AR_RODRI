@@ -19,13 +19,31 @@ from aerolineas_argentinas.parsers import (
 from aerolineas_argentinas.routes import offers_url
 
 
+REQUIRED_CHECKOUT_BOOTSTRAP_PATHS = {
+    "/v1/rules/checkout/documents",
+    "/v1/rules/checkout/passengerData",
+    "/v1/rules/checkout/specialServiceRequest",
+}
+CHECKOUT_BOOTSTRAP_PATHS = REQUIRED_CHECKOUT_BOOTSTRAP_PATHS | {
+    "/v1/localization/languageBundles/es-AR_checkout",
+}
+
+
+def update_bootstrap_status(
+    statuses: dict[str, int | None], path: str, status: int | None
+) -> None:
+    previous = statuses.get(path)
+    if status == 200 or previous != 200:
+        statuses[path] = status
+
+
 def select_react_control(page: Page, control, value: str) -> None:
     control.click(force=True)
     control.fill(value)
     page.wait_for_timeout(200)
     page.locator("[role='option']").filter(
-        has_text=re.compile(rf"^{re.escape(value)}(?:\s|$)", re.IGNORECASE)
-    ).first.click()
+        has_text=re.compile(rf"^{re.escape(value)}(?:\s|\(|$)", re.IGNORECASE)
+    ).first.click(timeout=5000)
 
 
 def select_react_option(page: Page, index: int, value: str) -> None:
@@ -41,25 +59,54 @@ def fill_text(locator, value: str) -> None:
     locator.press_sequentially(value, delay=75)
 
 
-def nearest_react_control_before(page: Page, locator):
-    target_box = locator.bounding_box()
-    if target_box is None:
-        raise RuntimeError("target input is not visible")
-    controls = page.locator("input[id^='react-select-']:visible")
-    nearest = None
-    nearest_distance = float("inf")
-    for index in range(controls.count()):
-        control = controls.nth(index)
-        box = control.bounding_box()
-        if box is None or box["y"] >= target_box["y"]:
-            continue
-        distance = target_box["y"] - box["y"]
-        if distance < nearest_distance:
-            nearest = control
-            nearest_distance = distance
-    if nearest is None:
-        raise RuntimeError("phone country control was not found")
-    return nearest
+def react_control_text(control) -> str:
+    container = control.locator(
+        "xpath=ancestor::div[contains(@class, '-control')][1]"
+    )
+    if container.count():
+        return container.inner_text()
+    return control.evaluate(
+        "el => el.parentElement?.parentElement?.parentElement?.innerText || ''"
+    )
+
+
+def wait_for_checkout_form(
+    page: Page,
+    bootstrap_status: dict[str, int | None],
+    timeout_seconds: int,
+    page_error_start: int,
+    page_errors: list[str],
+) -> bool:
+    required_fields = [
+        "input[name='passengers.0.passenger_firstName']",
+        "input[name='passengers.0.passenger_lastName']",
+        "input[name='passengers.0.passenger_documentNumber']",
+        "input[name='contactInformation_email']",
+        "input[aria-label='País']",
+    ]
+    started = time.monotonic()
+    deadline = started + timeout_seconds
+    while time.monotonic() < deadline:
+        if "/checkout-error" in page.url:
+            return False
+        bootstrap_ready = all(
+            bootstrap_status.get(path) == 200
+            for path in REQUIRED_CHECKOUT_BOOTSTRAP_PATHS
+        )
+        form_ready = all(page.locator(selector).is_visible() for selector in required_fields)
+        if bootstrap_ready and form_ready:
+            return True
+        current_errors = page_errors[page_error_start:]
+        if any("Loading chunk" in error for error in current_errors):
+            return False
+        bootstrap_failed = any(
+            path in bootstrap_status and bootstrap_status[path] != 200
+            for path in REQUIRED_CHECKOUT_BOOTSTRAP_PATHS
+        )
+        if bootstrap_failed and time.monotonic() - started >= 8:
+            return False
+        page.wait_for_timeout(500)
+    return False
 
 
 def main() -> int:
@@ -69,6 +116,10 @@ def main() -> int:
     parser.add_argument("--date", required=True, type=date.fromisoformat)
     parser.add_argument("--output", default=str(Path.home() / "Downloads" / "aerolineas_playwright_ancillaries.json"))
     parser.add_argument("--timeout-seconds", type=int, default=45)
+    parser.add_argument("--checkout-attempts", type=int, default=3)
+    parser.add_argument("--checkout-timeout-seconds", type=int, default=20)
+    parser.add_argument("--expected-booking-class", choices=("E", "N"))
+    parser.add_argument("--expected-flight-number", type=int)
     parser.add_argument(
         "--user-data-dir",
         default=str(Path.home() / "AppData" / "Local" / "aerolineas-playwright-profile"),
@@ -105,6 +156,8 @@ def main() -> int:
         "checkout_refreshed": False,
         "checkout_refreshes": 0,
         "checkout_api_events": [],
+        "checkout_bootstrap_status": {},
+        "checkout_bootstrap_attempts": [],
         "selected_shopping_id": None,
         "checkout_shopping_id": None,
         "fare_card_reclicked": False,
@@ -115,6 +168,8 @@ def main() -> int:
         "validation_messages": [],
         "selected_values": {},
         "offers_refreshes": 0,
+        "expected_booking_class": args.expected_booking_class,
+        "expected_flight_number": args.expected_flight_number,
         "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),
     }
     ancillary_payload = None
@@ -155,6 +210,10 @@ def main() -> int:
                     "path": path,
                     "status": status,
                 })
+            if path in CHECKOUT_BOOTSTRAP_PATHS:
+                update_bootstrap_status(
+                    result["checkout_bootstrap_status"], path, status
+                )
 
         def capture_response(response) -> None:
             nonlocal ancillary_payload, offers_payload
@@ -207,15 +266,20 @@ def main() -> int:
             except (TypeError, ValueError):
                 pass
 
-        page.on("request", capture_request)
-        page.on("response", capture_response)
-        page.on(
-            "requestfailed",
-            lambda request: record_checkout_event(
-                "requestfailed", request.method, request.url
-            ),
-        )
-        page.on("pageerror", lambda error: result["page_errors"].append(str(error)))
+        def attach_page_handlers(target: Page) -> None:
+            target.on("request", capture_request)
+            target.on("response", capture_response)
+            target.on(
+                "requestfailed",
+                lambda request: record_checkout_event(
+                    "requestfailed", request.method, request.url
+                ),
+            )
+            target.on(
+                "pageerror", lambda error: result["page_errors"].append(str(error))
+            )
+
+        attach_page_handlers(page)
         try:
             search_url = offers_url(args.origin, args.destination, args.date, flex=False)
             page.goto(search_url, wait_until="domcontentloaded")
@@ -235,10 +299,14 @@ def main() -> int:
                     if offers_payload is None:
                         result["error"] = "offers_response_not_received_after_refresh"
                         raise RuntimeError("offers response not received after refresh")
-                group_info = select_offer_group(offers_payload)
+                group_info = select_offer_group(
+                    offers_payload,
+                    requested_class=args.expected_booking_class,
+                    flight_number=args.expected_flight_number,
+                )
                 if group_info is None:
-                    result["error"] = "no_e_n_offer_for_exact_date"
-                    raise RuntimeError("no E/N offer for exact date")
+                    result["error"] = "calendar_offer_not_found_for_exact_date"
+                    raise RuntimeError("calendar E/N offer was not found for exact date")
                 selected_group, group_index, offer_index = group_info
                 selected_offer = selected_group["offers"][offer_index]
 
@@ -279,7 +347,7 @@ def main() -> int:
                     with page.expect_response(
                         lambda response: "/v1/flights/offers" in response.url
                         and response.request.method == "POST",
-                        timeout=15_000,
+                        timeout=30_000,
                     ):
                         price_label.click()
                 except Exception:
@@ -288,11 +356,12 @@ def main() -> int:
                     with page.expect_response(
                         lambda response: "/v1/flights/offers" in response.url
                         and response.request.method == "POST",
-                        timeout=15_000,
+                        timeout=30_000,
                     ):
                         fare_card.press("Enter")
                 buy_button = page.get_by_role("button", name="Comprar", exact=True)
                 buy_button.wait_for(state="visible", timeout=15_000)
+                checkout_page_error_start = len(result["page_errors"])
                 buy_button.click()
                 page.get_by_role("button", name="Aceptar", exact=True).last.click()
                 page.wait_for_url(re.compile(r"/checkout/passengers"))
@@ -305,26 +374,45 @@ def main() -> int:
                 if result["checkout_shopping_id"] != result["selected_shopping_id"]:
                     result["error"] = "checkout_shopping_id_mismatch"
                     raise RuntimeError("checkout shopping ID does not match selected offer")
-                first_name = page.locator("input[name='passengers.0.passenger_firstName']")
-                for load_attempt in range(4):
-                    try:
-                        first_name.wait_for(state="visible", timeout=25_000)
+                checkout_ready = False
+                for load_attempt in range(args.checkout_attempts):
+                    checkout_ready = wait_for_checkout_form(
+                        page,
+                        result["checkout_bootstrap_status"],
+                        args.checkout_timeout_seconds,
+                        checkout_page_error_start,
+                        result["page_errors"],
+                    )
+                    result["checkout_bootstrap_attempts"].append({
+                        "attempt": load_attempt + 1,
+                        "ready": checkout_ready,
+                        "statuses": dict(result["checkout_bootstrap_status"]),
+                        "page_errors": result["page_errors"][checkout_page_error_start:],
+                    })
+                    if checkout_ready:
                         break
-                    except Exception:
-                        if "/checkout-error" in page.url:
-                            result.update(
-                                status="security_blocked",
-                                error="checkout_security_validation_failed",
-                            )
-                            raise RuntimeError("checkout security validation failed")
-                        if load_attempt == 3:
-                            result["error"] = "checkout_form_not_loaded_after_3_refreshes"
-                            raise RuntimeError("checkout form not loaded after 3 refreshes")
-                        result["checkout_refreshed"] = True
-                        result["checkout_refreshes"] += 1
-                        cdp.send("Network.clearBrowserCache")
-                        page.goto(checkout_url, wait_until="domcontentloaded")
+                    if "/checkout-error" in page.url:
+                        result.update(
+                            status="security_blocked",
+                            error="checkout_security_validation_failed",
+                        )
+                        raise RuntimeError("checkout security validation failed")
+                    if load_attempt == args.checkout_attempts - 1:
+                        result["error"] = "checkout_form_not_loaded_after_retries"
+                        raise RuntimeError("checkout form not loaded after retries")
+                    result["checkout_refreshed"] = True
+                    result["checkout_refreshes"] += 1
+                    result["checkout_bootstrap_status"].clear()
+                    page.wait_for_timeout(5000 * (load_attempt + 1))
+                    previous_page = page
+                    checkout_page_error_start = len(result["page_errors"])
+                    page = context.new_page()
+                    page.set_default_timeout(args.timeout_seconds * 1000)
+                    attach_page_handlers(page)
+                    previous_page.close()
+                    page.goto(checkout_url, wait_until="domcontentloaded")
 
+                first_name = page.locator("input[name='passengers.0.passenger_firstName']")
                 fill_text(first_name, "LOL")
                 fill_text(page.locator("input[name='passengers.0.passenger_lastName']"), "LOL")
                 select_react_option(page, 0, "1")
@@ -350,8 +438,17 @@ def main() -> int:
                 )
                 page.locator("input[name='phone_type']").first.check(force=True)
                 area_code = page.locator("input[name='contactInformation_areaCode']")
-                phone_country = nearest_react_control_before(page, area_code)
+                phone_country = page.locator("input[aria-label='País']:visible")
+                if phone_country.count() != 1:
+                    result["error"] = "phone_country_control_not_unique"
+                    raise RuntimeError("phone country control was not unique")
+                result["phone_country_control_id"] = phone_country.get_attribute("id")
                 select_react_control(page, phone_country, "Afganistán")
+                page.wait_for_timeout(500)
+                result["phone_country_text"] = react_control_text(phone_country)
+                if "afganistán" not in result["phone_country_text"].lower():
+                    result["error"] = "phone_country_not_selected"
+                    raise RuntimeError("phone country was not selected")
                 fill_text(area_code, "32")
                 fill_text(
                     page.locator("input[name='contactInformation_phoneNumber']"),

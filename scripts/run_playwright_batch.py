@@ -114,6 +114,12 @@ def flatten_result(result: dict) -> dict:
     row["selected_values"] = json.dumps(
         row.get("selected_values", {}), ensure_ascii=False
     )
+    row["checkout_bootstrap_status"] = json.dumps(
+        row.get("checkout_bootstrap_status", {}), ensure_ascii=False
+    )
+    row["checkout_bootstrap_attempts"] = json.dumps(
+        row.get("checkout_bootstrap_attempts", []), ensure_ascii=False
+    )
     row["attempt_history"] = json.dumps(
         row.get("attempt_history", []), ensure_ascii=False
     )
@@ -253,6 +259,14 @@ def main() -> int:
                     "--timeout-seconds", str(args.timeout_seconds),
                     "--output", str(attempt_output),
                 ]
+                if candidate.get("booking_class"):
+                    command.extend([
+                        "--expected-booking-class", candidate["booking_class"]
+                    ])
+                if candidate.get("flight_number") is not None:
+                    command.extend([
+                        "--expected-flight-number", str(candidate["flight_number"])
+                    ])
                 if cdp_url:
                     command.extend(["--cdp-url", cdp_url])
                 completed = subprocess.run(command, env=os.environ.copy(), check=False)
